@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package pbft;
+
+// pBFT RPC Service
+service PBFTService {
+  // Core consensus phases
+  rpc PrePrepare(PrePrepareRequest) returns (PrePrepareReply);
+  rpc Prepare(PrepareRequest) returns (PrepareReply);
+  rpc Commit(CommitRequest) returns (CommitReply);
+  
+  // Client request
+  rpc Request(ClientRequest) returns (ClientReply);
+  
+  // View change (leader rotation on failure)
+  rpc ViewChange(ViewChangeRequest) returns (ViewChangeReply);
+  rpc NewView(NewViewRequest) returns (NewViewReply);
+  
+  // Status
+  rpc GetStatus(StatusRequest) returns (StatusReply);
+}
+
+// Client request message
+message ClientRequest {
+  string operation = 1;     // e.g., "SET A=10"
+  int64 timestamp = 2;      // Client timestamp for dedup
+  int32 client_id = 3;
+}
+
+message ClientReply {
+  int32 view = 1;
+  int64 timestamp = 2;
+  int32 replica_id = 3;
+  bool success = 4;
+  string result = 5;
+}
+
+// PrePrepare phase (primary to all replicas)
+message PrePrepareRequest {
+  int32 view = 1;           // Current view number
+  int64 sequence = 2;       // Sequence number assigned by primary
+  string digest = 3;        // Hash of the request
+  ClientRequest request = 4; // The actual request
+  int32 primary_id = 5;     // Sender (primary)
+}
+
+message PrePrepareReply {
+  bool accepted = 1;
+}
+
+// Prepare phase (replica to all replicas)
+message PrepareRequest {
+  int32 view = 1;
+  int64 sequence = 2;
+  string digest = 3;
+  int32 replica_id = 4;     // Sender
+}
+
+message PrepareReply {
+  bool accepted = 1;
+}
+
+// Commit phase (replica to all replicas)
+message CommitRequest {
+  int32 view = 1;
+  int64 sequence = 2;
+  string digest = 3;
+  int32 replica_id = 4;     // Sender
+}
+
+message CommitReply {
+  bool accepted = 1;
+}
+
+// View change (on primary failure timeout)
+message ViewChangeRequest {
+  int32 new_view = 1;
+  int64 last_sequence = 2;  // Last committed sequence
+  int32 replica_id = 3;
+  // Prepared proofs would go here in full implementation
+}
+
+message ViewChangeReply {
+  bool accepted = 1;
+}
+
+message NewViewRequest {
+  int32 new_view = 1;
+  int32 new_primary_id = 2;
+  repeated PrePrepareRequest pre_prepares = 3;  // Pending requests
+}
+
+message NewViewReply {
+  bool accepted = 1;
+}
+
+// Status for debugging
+message StatusRequest {}
+
+message StatusReply {
+  int32 view = 1;
+  int64 last_sequence = 2;
+  int32 primary_id = 3;
+  int32 replica_id = 4;
+  bool is_primary = 5;
+  string state = 6;  // "normal", "view-change"
+}

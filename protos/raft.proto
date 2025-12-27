@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package raft;
+
+// Raft RPC Service
+service RaftService {
+  rpc RequestVote(RequestVoteArgs) returns (RequestVoteReply);
+  rpc AppendEntries(AppendEntriesArgs) returns (AppendEntriesReply);
+  rpc Ping(PingRequest) returns (PingReply);
+  rpc GetState(GetStateRequest) returns (GetStateReply);
+  rpc SubmitCommand(SubmitCommandRequest) returns (SubmitCommandReply);
+  rpc GetData(GetDataRequest) returns (GetDataReply);
+}
+
+// Log Entry
+message Entry {
+  int32 term = 1;
+  string command = 2;  // e.g., "SET A=10" or "DELETE B"
+}
+
+// RequestVote RPC
+message RequestVoteArgs {
+  int32 term = 1;
+  int32 candidate_id = 2;
+  int32 last_log_index = 3;
+  int32 last_log_term = 4;
+}
+
+message RequestVoteReply {
+  int32 term = 1;
+  bool vote_granted = 2;
+}
+
+// AppendEntries RPC
+message AppendEntriesArgs {
+  int32 term = 1;
+  int32 leader_id = 2;
+  int32 prev_log_index = 3;
+  int32 prev_log_term = 4;
+  repeated Entry entries = 5;
+  int32 leader_commit = 6;
+}
+
+message AppendEntriesReply {
+  int32 term = 1;
+  bool success = 2;
+}
+
+// Ping RPC (for testing)
+message PingRequest {
+  int32 sender_id = 1;
+}
+
+message PingReply {
+  int32 receiver_id = 1;
+  string message = 2;
+}
+
+// GetState RPC (for testing/debugging)
+message GetStateRequest {}
+
+message GetStateReply {
+  string state = 1;
+  int32 term = 2;
+  int32 node_id = 3;
+  int32 log_length = 4;
+  int32 commit_index = 5;
+}
+
+// SubmitCommand RPC (client -> leader)
+message SubmitCommandRequest {
+  string command = 1;  // e.g., "SET A=10"
+}
+
+message SubmitCommandReply {
+  bool success = 1;
+  string message = 2;
+  int32 leader_id = 3;  // Redirect hint if not leader
+}
+
+// GetData RPC (read from state machine)
+message GetDataRequest {
+  string key = 1;
+}
+
+message GetDataReply {
+  bool success = 1;
+  string value = 2;
+  string message = 3;
+}

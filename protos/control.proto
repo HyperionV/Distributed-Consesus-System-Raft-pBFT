@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package control;
+
+// Control Service for Network Simulation
+service ControlService {
+  rpc SetPartition(PartitionRequest) returns (PartitionReply);
+  rpc GetPartitionStatus(PartitionStatusRequest) returns (PartitionStatusReply);
+}
+
+message PartitionRequest {
+  repeated string blocked_ips = 1;
+  repeated int32 blocked_node_ids = 2;  // Block by node ID (easier for testing)
+}
+
+message PartitionReply {
+  bool success = 1;
+  string message = 2;
+}
+
+message PartitionStatusRequest {}
+
+message PartitionStatusReply {
+  repeated int32 blocked_node_ids = 1;
+  repeated string blocked_ips = 2;
+}
+
