@@ -54,9 +54,12 @@ def start_pbft_cluster(num_nodes=4, malicious_nodes=None):
         else:
             print(f"  Starting Node {node_id}...")
         
+        env = os.environ.copy()
+        env['PYTHONPATH'] = os.path.join(project_root, 'src')
         proc = subprocess.Popen(
             cmd,
             cwd=project_root,
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )

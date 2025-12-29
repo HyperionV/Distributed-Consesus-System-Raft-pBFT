@@ -21,7 +21,11 @@ pip install -r requirements.txt
 ### 2. Generate gRPC Code
 
 ```bash
+# Generate protobuf files
 python -m grpc_tools.protoc -I protos --python_out=src/generated --grpc_python_out=src/generated protos/*.proto
+
+# Fix imports (required - converts bare imports to package imports)
+python src/fix_imports.py
 ```
 
 ### 3. Run Tests
@@ -153,7 +157,13 @@ See [raft_vs_pbft_comparison.md](./raft_vs_pbft_comparison.md) for detailed anal
 
 ## Troubleshooting
 
-**Import errors**: Regenerate gRPC code (step 2)
+**Import errors** (`ModuleNotFoundError: No module named 'raft_pb2'` or `ImportError: attempted relative import`):
+
+```bash
+# Regenerate protobuf files and fix imports
+python -m grpc_tools.protoc -I protos --python_out=src/generated --grpc_python_out=src/generated protos/*.proto
+python src/fix_imports.py
+```
 
 **Port conflicts**:
 

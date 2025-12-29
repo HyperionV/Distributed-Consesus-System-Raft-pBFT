@@ -85,7 +85,24 @@ class TestRunner:
         print('='*70)
 
 
+import glob
+
+def cleanup_wal_files():
+    """Remove stale WAL files from previous runs"""
+    wal_files = glob.glob(os.path.join(project_root, 'wal_data_*'))
+    if wal_files:
+        print(f"Cleaning up {len(wal_files)} stale WAL files...")
+        for f in wal_files:
+            try:
+                os.remove(f)
+            except:
+                pass
+
+
 def main():
+    # Clean up stale WAL files first
+    cleanup_wal_files()
+    
     runner = TestRunner()
     
     print("="*70)

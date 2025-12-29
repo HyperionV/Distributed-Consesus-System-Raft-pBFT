@@ -11,9 +11,13 @@ def run_cluster(num_nodes=5):
     for i in range(1, num_nodes + 1):
         cmd = [sys.executable, 'src/main.py', '--id', str(i)]
         print(f"Starting Node {i}...")
+        project_root = os.path.join(os.path.dirname(__file__), '..')
+        env = os.environ.copy()
+        env['PYTHONPATH'] = os.path.join(project_root, 'src')
         proc = subprocess.Popen(
             cmd,
-            cwd=os.path.join(os.path.dirname(__file__), '..'),
+            cwd=project_root,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

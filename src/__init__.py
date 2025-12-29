@@ -1,1 +1,1 @@
-# Distributed Consensus System
+# Source package
