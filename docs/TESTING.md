@@ -63,7 +63,7 @@ python scripts/test_replication.py
 
 When a test runs, look for these markers:
 
-- `✓ PASS`: The scenario was handled correctly.
-- `✗ FAIL`: An assertion was not met (e.g., no leader elected).
+- `PASS`: The scenario was handled correctly.
+- `FAIL`: An assertion was not met (e.g., no leader elected).
 - `[Node X]`: Logs prefixed with the Node ID show the internal consensus state (e.g., `Leader`, `Follower`, `term=5`).
 - `WAL loaded`: Indicates persistence is working after a restart.

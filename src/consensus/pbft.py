@@ -1,352 +1,217 @@
-"""
-pBFT (Practical Byzantine Fault Tolerance) Consensus Implementation
-Tolerates f Byzantine faults with 3f+1 nodes (f=1 means 4 nodes)
-"""
 import threading
 import time
 import hashlib
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-
 from generated import pbft_pb2
 from consensus.state_machine import StateMachine
 
-
 class PBFTConsensus:
     """
-    Practical Byzantine Fault Tolerance consensus.
-    Requires 3f+1 nodes to tolerate f Byzantine faults.
-    Uses three-phase protocol: PrePrepare -> Prepare -> Commit
+    Practical Byzantine Fault Tolerance (pBFT) implementation.
+    Tolerates up to f Byzantine nodes in a cluster of 3f+1 total nodes.
     """
     
     def __init__(self, node, f=1):
         self.node = node
-        self.logger = node.logger
-        self.f = f  # Number of Byzantine faults to tolerate
-        self.quorum = 2 * f + 1  # 2f+1 for consensus
+        self.f = f
+        self.quorum = 2 * f + 1
+        self.view = 0
+        self.sequence = 0
+        self.state_machine = StateMachine(node=node)
         
-        # State
-        self.view = 0  # Current view (determines primary)
-        self.sequence = 0  # Last assigned sequence number
-        self.state_machine = StateMachine(logger=self.logger)
+        self.pre_prepares = {}
+        self.prepares = defaultdict(set)
+        self.commits = defaultdict(set)
+        self.executed = set()
+        self.pending_requests = {}
+        self.view_change_votes = defaultdict(set)
         
-        # Message logs per (view, sequence)
-        self.pre_prepares = {}  # (v, n) -> PrePrepareRequest
-        self.prepares = defaultdict(set)  # (v, n, digest) -> set of replica_ids
-        self.commits = defaultdict(set)  # (v, n, digest) -> set of replica_ids
-        
-        # Execution tracking
-        self.executed = set()  # Set of executed (v, n) pairs
-        self.pending_requests = {}  # digest -> ClientRequest
-        
-        # View change
-        self.view_change_votes = defaultdict(set)  # new_view -> set of replica_ids
-        self.state = "normal"  # "normal" or "view-change"
-        self.view_change_timeout = 5.0  # seconds
+        self.state = "normal"
+        self.view_change_timeout = 10.0
         self.last_activity = time.time()
-        
-        # Thread control
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.running = False
-        self.timeout_thread = None
-        
-        # Malicious mode for testing
         self.malicious = False
     
     @property
     def primary_id(self):
-        """Current primary (leader) determined by view number"""
-        total_nodes = len(self.node.peers) + 1
-        return (self.view % total_nodes) + 1  # 1-indexed node IDs
+        return (self.view % (len(self.node.peers) + 1)) + 1
     
     @property
     def is_primary(self):
-        """Check if this node is the current primary"""
         return self.node.node_id == self.primary_id
     
-    def _digest(self, message):
-        """Compute SHA-256 digest of a message"""
-        if self.malicious:
-            # Malicious node sends garbage digest
-            return hashlib.sha256(b"garbage").hexdigest()
-        return hashlib.sha256(message.encode()).hexdigest()
+    def _digest(self, msg):
+        """SHA-256 digest. Malicious nodes return garbage."""
+        if self.malicious: return hashlib.sha256(b"malicious").hexdigest()
+        return hashlib.sha256(msg.encode()).hexdigest()
     
     def start(self):
-        """Start pBFT consensus"""
         self.running = True
-        self.timeout_thread = threading.Thread(target=self._timeout_loop, daemon=True)
-        self.timeout_thread.start()
-        self.logger.info(f"pBFT started: view={self.view}, primary=Node {self.primary_id}, is_primary={self.is_primary}")
+        threading.Thread(target=self._timeout_loop, daemon=True).start()
+        self.node.log(f"pBFT started: view={self.view}, primary=Node {self.primary_id}")
     
     def stop(self):
-        """Stop pBFT consensus"""
         self.running = False
-        if self.timeout_thread:
-            self.timeout_thread.join(timeout=1.0)
     
     def _timeout_loop(self):
-        """Monitor for primary failure and trigger view change"""
         while self.running:
-            time.sleep(0.5)
-            
+            time.sleep(1.0)
             if self.state == "normal" and not self.is_primary:
-                elapsed = time.time() - self.last_activity
-                if elapsed > self.view_change_timeout:
-                    self.logger.warning(f"Primary timeout ({elapsed:.1f}s), initiating view change")
+                if time.time() - self.last_activity > self.view_change_timeout:
+                    self.node.log("Primary timeout, starting view change", level="WARN")
                     self._initiate_view_change()
     
     def _initiate_view_change(self):
-        """Start view change protocol"""
         with self.lock:
             self.state = "view-change"
-            new_view = self.view + 1
-            self.view_change_votes[new_view].add(self.node.node_id)
-        
-        # Broadcast ViewChange to all
+            new_v = self.view + 1
+            self.view_change_votes[new_v].add(self.node.node_id)
+        req = pbft_pb2.ViewChangeRequest(new_view=new_v, last_sequence=self.sequence, 
+                                          replica_id=self.node.node_id)
+        self._broadcast('view_change', req)
+    
+    def _broadcast(self, msg_type, req):
+        """Broadcast message to all peers."""
         from infrastructure.comms import Communicator
         comm = Communicator(self.node)
-        
-        request = pbft_pb2.ViewChangeRequest(
-            new_view=new_view,
-            last_sequence=self.sequence,
-            replica_id=self.node.node_id
-        )
-        
         for peer in self.node.peers:
             try:
-                comm.pbft_view_change(peer, request)
-            except:
-                pass
+                if msg_type == 'pre_prepare': comm.pbft_pre_prepare(peer, req, timeout=0.5)
+                elif msg_type == 'prepare': comm.pbft_prepare(peer, req, timeout=0.5)
+                elif msg_type == 'commit': comm.pbft_commit(peer, req, timeout=0.5)
+                elif msg_type == 'view_change': comm.pbft_view_change(peer, req, timeout=0.5)
+            except: pass
     
-    def handle_client_request(self, request):
-        """Handle incoming client request (primary only processes)"""
+    def handle_client_request(self, req):
+        """Primary: assign sequence number and initiate consensus."""
         with self.lock:
             self.last_activity = time.time()
-            
             if not self.is_primary:
-                # Forward to primary or reject
-                return pbft_pb2.ClientReply(
-                    view=self.view,
-                    timestamp=request.timestamp,
-                    replica_id=self.node.node_id,
-                    success=False,
-                    result=f"Not primary. Try Node {self.primary_id}"
-                )
+                return pbft_pb2.ClientReply(view=self.view, success=False, 
+                    result=f"Redirect to Node {self.primary_id}")
             
-            # Assign sequence number
             self.sequence += 1
             seq = self.sequence
-            digest = self._digest(request.operation)
+            digest = self._digest(req.operation)
+            self.pending_requests[digest] = req
             
-            # Store request
-            self.pending_requests[digest] = request
-            
-            # Create PrePrepare
-            pre_prepare = pbft_pb2.PrePrepareRequest(
-                view=self.view,
-                sequence=seq,
-                digest=digest,
-                request=request,
-                primary_id=self.node.node_id
-            )
-            
-            # Store locally
-            self.pre_prepares[(self.view, seq)] = pre_prepare
+            pp = pbft_pb2.PrePrepareRequest(view=self.view, sequence=seq, digest=digest, 
+                                           request=req, primary_id=self.node.node_id)
+            self.pre_prepares[(self.view, seq)] = pp
+            # Primary counts itself
+            self.prepares[(self.view, seq, digest)].add(self.node.node_id)
         
-        # Broadcast PrePrepare to all replicas
-        self._broadcast_pre_prepare(pre_prepare)
+        # Broadcast PrePrepare (outside lock)
+        self._broadcast('pre_prepare', pp)
         
-        # Wait for execution (simplified - real impl would use callbacks)
-        for _ in range(50):  # 5 second timeout
+        # Primary also broadcasts its Prepare (so replicas can count it)
+        self._broadcast('prepare', pbft_pb2.PrepareRequest(
+            view=self.view, sequence=seq, digest=digest, replica_id=self.node.node_id))
+        
+        # Wait for execution
+        for _ in range(80):
             time.sleep(0.1)
             with self.lock:
                 if (self.view, seq) in self.executed:
-                    return pbft_pb2.ClientReply(
-                        view=self.view,
-                        timestamp=request.timestamp,
-                        replica_id=self.node.node_id,
-                        success=True,
-                        result=f"Committed at sequence {seq}"
-                    )
+                    return pbft_pb2.ClientReply(view=self.view, success=True, 
+                        result=f"Committed seq {seq}")
         
-        return pbft_pb2.ClientReply(
-            view=self.view,
-            timestamp=request.timestamp,
-            replica_id=self.node.node_id,
-            success=False,
-            result="Timeout waiting for commit"
-        )
+        return pbft_pb2.ClientReply(view=self.view, success=False, result="Timeout")
     
-    def _broadcast_pre_prepare(self, pre_prepare):
-        """Primary broadcasts PrePrepare to all replicas"""
-        from infrastructure.comms import Communicator
-        comm = Communicator(self.node)
+    def handle_pre_prepare(self, req):
+        """Validate PrePrepare from primary and broadcast Prepare."""
+        v, n, d = req.view, req.sequence, req.digest
         
-        for peer in self.node.peers:
-            try:
-                comm.pbft_pre_prepare(peer, pre_prepare)
-            except:
-                pass
-    
-    def handle_pre_prepare(self, request):
-        """Handle PrePrepare from primary"""
         with self.lock:
             self.last_activity = time.time()
-            v, n, d = request.view, request.sequence, request.digest
             
-            # Validate
-            if request.view != self.view:
+            if v != self.view or req.primary_id != self.primary_id:
                 return pbft_pb2.PrePrepareReply(accepted=False)
             
-            if request.primary_id != self.primary_id:
+            expected = self._digest(req.request.operation)
+            if d != expected:
+                self.node.log(f"Digest mismatch seq {n}", level="WARN")
                 return pbft_pb2.PrePrepareReply(accepted=False)
             
-            # Check digest
-            expected_digest = self._digest(request.request.operation)
-            if d != expected_digest:
-                self.logger.warning(f"Digest mismatch from primary (Byzantine?)")
-                return pbft_pb2.PrePrepareReply(accepted=False)
-            
-            # Accept PrePrepare
-            self.pre_prepares[(v, n)] = request
-            self.pending_requests[d] = request.request
-            
-            # Add our own Prepare vote
+            self.pre_prepares[(v, n)] = req
+            self.pending_requests[d] = req.request
             self.prepares[(v, n, d)].add(self.node.node_id)
         
-        # Broadcast Prepare to all
-        self._broadcast_prepare(v, n, d)
+        # Broadcast Prepare (outside lock)
+        self._broadcast('prepare', pbft_pb2.PrepareRequest(
+            view=v, sequence=n, digest=d, replica_id=self.node.node_id))
         
         return pbft_pb2.PrePrepareReply(accepted=True)
     
-    def _broadcast_prepare(self, view, seq, digest):
-        """Broadcast Prepare to all replicas"""
-        from infrastructure.comms import Communicator
-        comm = Communicator(self.node)
-        
-        prepare = pbft_pb2.PrepareRequest(
-            view=view,
-            sequence=seq,
-            digest=digest,
-            replica_id=self.node.node_id
-        )
-        
-        for peer in self.node.peers:
-            try:
-                comm.pbft_prepare(peer, prepare)
-            except:
-                pass
-    
-    def handle_prepare(self, request):
-        """Handle Prepare from replica"""
-        v, n, d = request.view, request.sequence, request.digest
+    def handle_prepare(self, req):
+        """Collect Prepare votes. Start Commit phase when quorum reached."""
+        v, n, d = req.view, req.sequence, req.digest
+        should_commit = False
         
         with self.lock:
             self.last_activity = time.time()
-            
             if v != self.view:
                 return pbft_pb2.PrepareReply(accepted=False)
             
-            # Record Prepare
-            self.prepares[(v, n, d)].add(request.replica_id)
+            self.prepares[(v, n, d)].add(req.replica_id)
+            count = len(self.prepares[(v, n, d)])
             
-            # Check if we have quorum
-            if len(self.prepares[(v, n, d)]) >= self.quorum:
-                # Add our commit vote
+            if count >= self.quorum and self.node.node_id not in self.commits[(v, n, d)]:
                 self.commits[(v, n, d)].add(self.node.node_id)
+                should_commit = True
         
-        # If quorum reached, broadcast Commit
-        if len(self.prepares[(v, n, d)]) >= self.quorum:
-            self._broadcast_commit(v, n, d)
+        if should_commit:
+            self._broadcast('commit', pbft_pb2.CommitRequest(
+                view=v, sequence=n, digest=d, replica_id=self.node.node_id))
         
         return pbft_pb2.PrepareReply(accepted=True)
     
-    def _broadcast_commit(self, view, seq, digest):
-        """Broadcast Commit to all replicas"""
-        from infrastructure.comms import Communicator
-        comm = Communicator(self.node)
-        
-        commit = pbft_pb2.CommitRequest(
-            view=view,
-            sequence=seq,
-            digest=digest,
-            replica_id=self.node.node_id
-        )
-        
-        for peer in self.node.peers:
-            try:
-                comm.pbft_commit(peer, commit)
-            except:
-                pass
-    
-    def handle_commit(self, request):
-        """Handle Commit from replica"""
-        v, n, d = request.view, request.sequence, request.digest
+    def handle_commit(self, req):
+        """Collect Commit votes. Execute when quorum reached."""
+        v, n, d = req.view, req.sequence, req.digest
         
         with self.lock:
             self.last_activity = time.time()
-            
             if v != self.view:
                 return pbft_pb2.CommitReply(accepted=False)
             
-            # Record Commit
-            self.commits[(v, n, d)].add(request.replica_id)
+            self.commits[(v, n, d)].add(req.replica_id)
             
-            # Check if we have quorum and haven't executed yet
             if len(self.commits[(v, n, d)]) >= self.quorum and (v, n) not in self.executed:
-                # Execute!
-                self._execute(v, n, d)
+                self.executed.add((v, n))
+                request = self.pending_requests.get(d)
+                if request:
+                    _, res = self.state_machine.apply(request.operation)
+                    self.node.log(f"COMMIT seq={n}: {request.operation} -> {res}")
         
         return pbft_pb2.CommitReply(accepted=True)
     
-    def _execute(self, view, seq, digest):
-        """Execute a committed request"""
-        if (view, seq) in self.executed:
-            return
-        
-        self.executed.add((view, seq))
-        
-        request = self.pending_requests.get(digest)
-        if request:
-            success, result = self.state_machine.apply(request.operation)
-            self.logger.info(f"pBFT executed seq={seq}: {request.operation} -> {result}")
-    
-    def handle_view_change(self, request):
-        """Handle ViewChange from replica"""
+    def handle_view_change(self, req):
         with self.lock:
-            new_view = request.new_view
-            
-            if new_view <= self.view:
+            if req.new_view <= self.view:
                 return pbft_pb2.ViewChangeReply(accepted=False)
             
-            self.view_change_votes[new_view].add(request.replica_id)
+            self.view_change_votes[req.new_view].add(req.replica_id)
             
-            # Check if we have quorum for view change
-            if len(self.view_change_votes[new_view]) >= self.quorum:
-                self._complete_view_change(new_view)
+            if len(self.view_change_votes[req.new_view]) >= self.quorum:
+                self.view = req.new_view
+                self.state = "normal"
+                self.last_activity = time.time()
+                self.node.log(f"View change complete: view={self.view}")
         
         return pbft_pb2.ViewChangeReply(accepted=True)
     
-    def _complete_view_change(self, new_view):
-        """Complete view change to new view"""
-        self.view = new_view
-        self.state = "normal"
-        self.last_activity = time.time()
-        self.logger.info(f"View change complete: view={new_view}, new primary=Node {self.primary_id}")
-    
     def get_status(self):
-        """Get current status"""
         with self.lock:
             return {
-                'view': self.view,
-                'sequence': self.sequence,
+                'view': self.view, 
+                'sequence': self.sequence, 
                 'primary_id': self.primary_id,
-                'is_primary': self.is_primary,
-                'state': self.state,
-                'executed_count': len(self.executed)
+                'is_primary': self.is_primary, 
+                'state': self.state
             }
     
-    def set_malicious(self, enabled):
-        """Enable/disable malicious mode for testing"""
-        self.malicious = enabled
-        self.logger.warning(f"Malicious mode: {enabled}")
+    def set_malicious(self, val):
+        self.malicious = val
+        self.node.log(f"Malicious mode: {val}", level="WARN")

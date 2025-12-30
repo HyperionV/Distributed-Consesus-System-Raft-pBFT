@@ -48,7 +48,7 @@ def start_nodes():
         processes.append((i, proc))
         time.sleep(0.3)
     
-    print(f"\n✓ All 5 nodes started")
+    print(f"\nAll 5 nodes started")
     print("Waiting for election...")
     time.sleep(1.0)
     

@@ -1,179 +1,95 @@
-"""
-Comprehensive End-to-End Test Suite for Distributed Consensus System
-Tests both Raft and pBFT implementations across all scenarios
-"""
 import sys
 import os
 import time
 import subprocess
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(script_dir)
-sys.path.insert(0, os.path.join(project_root, 'src'))
-
+import glob
+import psutil
 
 class TestRunner:
-    def __init__(self):
-        self.results = {}
-        self.total = 0
-        self.passed = 0
-        self.failed = 0
-    
-    def run_test(self, name, script_path):
-        """Run a test script and record result"""
-        self.total += 1
-        print(f"\n{'='*70}")
-        print(f"Running: {name}")
-        print('='*70)
-        
-        try:
-            result = subprocess.run(
-                [sys.executable, script_path],
-                cwd=project_root,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            
-            success = result.returncode == 0
-            self.results[name] = {
-                'success': success,
-                'output': result.stdout[-500:] if result.stdout else '',
-                'error': result.stderr[-500:] if result.stderr else ''
-            }
-            
-            if success:
-                self.passed += 1
-                print(f"✓ PASS: {name}")
-            else:
-                self.failed += 1
-                print(f"✗ FAIL: {name}")
-                if result.stderr:
-                    print(f"Error: {result.stderr[-200:]}")
-            
-            return success
-            
-        except subprocess.TimeoutExpired:
-            self.failed += 1
-            self.results[name] = {'success': False, 'output': '', 'error': 'Timeout'}
-            print(f"✗ TIMEOUT: {name}")
-            return False
-        except Exception as e:
-            self.failed += 1
-            self.results[name] = {'success': False, 'output': '', 'error': str(e)}
-            print(f"✗ ERROR: {name} - {e}")
-            return False
-    
-    def print_summary(self):
-        """Print final test summary"""
-        print(f"\n{'='*70}")
-        print("FINAL TEST SUMMARY")
-        print('='*70)
-        print(f"Total Tests: {self.total}")
-        print(f"Passed: {self.passed} ({100*self.passed//self.total if self.total else 0}%)")
-        print(f"Failed: {self.failed}")
-        print()
-        
-        if self.failed > 0:
-            print("Failed Tests:")
-            for name, result in self.results.items():
-                if not result['success']:
-                    print(f"  ✗ {name}")
-                    if result['error']:
-                        print(f"    Error: {result['error'][:100]}")
-        
-        print('='*70)
+    """
+    Automated test runner for the Raft and pBFT consensus cluster.
+    """
+    def __init__(self, python_path=sys.executable):
+        self.python = python_path
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.results = []
 
-
-import glob
-
-def cleanup_wal_files():
-    """Remove stale WAL files from previous runs"""
-    wal_files = glob.glob(os.path.join(project_root, 'wal_data_*'))
-    if wal_files:
-        print(f"Cleaning up {len(wal_files)} stale WAL files...")
-        for f in wal_files:
+    def cleanup(self):
+        """Clean up stale WAL data files and stop running node processes."""
+        print("[INFO] Cleaning up environment...")
+        
+        # Remove WAL files
+        for f in glob.glob("wal_data_*.json") + glob.glob("wal_data_*.json.tmp"):
+            try: os.remove(f)
+            except: pass
+            
+        # Kill only consensus node processes, not the test runner itself
+        current_pid = os.getpid()
+        for proc in psutil.process_iter(['pid', 'cmdline']):
             try:
-                os.remove(f)
-            except:
-                pass
+                cmd = proc.info['cmdline']
+                if not cmd: continue
+                cmd_str = ' '.join(cmd)
+                # Check for our consensus scripts but don't kill the current script
+                if proc.info['pid'] != current_pid:
+                    if 'src/main.py' in cmd_str or 'src/pbft_main.py' in cmd_str or 'scripts/run_cluster.py' in cmd_str:
+                        proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+        time.sleep(1)
 
+    def run_script(self, name, script_path, timeout=60):
+        """Execute a single test script and record its result."""
+        print(f"\n[TEST] {name}")
+        env = os.environ.copy()
+        env['PYTHONPATH'] = os.path.join(self.root, 'src')
+        try:
+            res = subprocess.run([self.python, script_path], cwd=self.root, env=env, timeout=timeout)
+            passed = res.returncode == 0
+            if not passed: print(f"[FAIL] {name}")
+            self.results.append((name, "[PASS]" if passed else "[FAIL]"))
+
+            return passed
+        except Exception as e:
+            print(f"[ERROR] {name}: {e}")
+            self.results.append((name, "[ERROR]"))
+            return False
 
 def main():
-    # Clean up stale WAL files first
-    cleanup_wal_files()
-    
+    """Main execution entry for running all consensus tests."""
     runner = TestRunner()
-    
-    print("="*70)
-    print("DISTRIBUTED CONSENSUS SYSTEM - END-TO-END TEST SUITE")
-    print("="*70)
-    print("Testing: Raft (CFT) and pBFT (BFT) implementations")
-    print()
-    
-    # === RAFT TESTS ===
-    print("\n" + "="*70)
-    print("RAFT CONSENSUS TESTS (Crash Fault Tolerance)")
-    print("="*70)
-    
-    # Election & Failover
-    runner.run_test(
-        "Raft: Leader Election",
-        os.path.join(script_dir, 'test_election.py')
-    )
-    
-    runner.run_test(
-        "Raft: Automated Failover",
-        os.path.join(script_dir, 'test_automated_failover.py')
-    )
-    
-    runner.run_test(
-        "Raft: Node Rejoin",
-        os.path.join(script_dir, 'test_node_rejoin.py')
-    )
-    
-    runner.run_test(
-        "Raft: Split Vote Recovery",
-        os.path.join(script_dir, 'test_split_vote.py')
-    )
-    
-    # Log Replication & Persistence
-    runner.run_test(
-        "Raft: Log Replication",
-        os.path.join(script_dir, 'test_replication.py')
-    )
-    
-    runner.run_test(
-        "Raft: WAL Persistence",
-        os.path.join(script_dir, 'test_persistence.py')
-    )
-    
-    # Chaos Engineering
-    runner.run_test(
-        "Raft: Leader Failure",
-        os.path.join(script_dir, 'test_leader_failure.py')
-    )
-    
-    runner.run_test(
-        "Raft: Network Partition (3-2 Split)",
-        os.path.join(script_dir, 'test_network_partition.py')
-    )
-    
-    # === pBFT TESTS ===
-    print("\n" + "="*70)
-    print("pBFT CONSENSUS TESTS (Byzantine Fault Tolerance)")
-    print("="*70)
-    
-    runner.run_test(
-        "pBFT: Byzantine Tolerance",
-        os.path.join(script_dir, 'test_pbft.py')
-    )
-    
-    # Print final summary
-    runner.print_summary()
-    
-    return 0 if runner.failed == 0 else 1
+    runner.cleanup()
+
+    print("\n[PHASE 1] RAFT CLUSTER")
+    # Allow node logs to reach console for tracing as requested
+    cluster = subprocess.Popen([sys.executable, 'scripts/run_cluster.py'], cwd=runner.root)
+    time.sleep(3)
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+    raft_tests = [
+        ("Leader Election", "scripts/test_election.py"),
+        ("Leader Failure", "scripts/test_leader_failure.py"),
+        ("Log Replication", "scripts/test_replication.py"),
+        ("Network Partition", "scripts/test_network_partition.py"),
+        ("Persistence", "scripts/test_persistence.py"),
+        ("Node Rejoin", "scripts/test_node_rejoin.py"),
+        ("Split Vote Recovery", "scripts/test_split_vote.py")
+    ]
+
+    all_passed = True
+    for name, path in raft_tests:
+        print("\n=============")
+        if not runner.run_script(name, path): all_passed = False
+    
+    cluster.terminate()
+    runner.cleanup()
+
+    print("\n=============\n\n[PHASE 2] PBFT CLUSTER")
+    if not runner.run_script("pBFT Byzantine Test", "scripts/test_pbft.py", timeout=120): all_passed = False
+
+    print("\n=============\n\nTEST SUMMARY")
+    for name, res in runner.results: print(f"{res.ljust(8)} {name}")
+    print("="*60)
+    sys.exit(0 if all_passed else 1)
+
+if __name__ == "__main__":
+    main()

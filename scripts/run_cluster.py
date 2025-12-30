@@ -4,43 +4,29 @@ import sys
 import os
 
 def run_cluster(num_nodes=5):
-    print(f"=== Starting {num_nodes} Nodes ===\n")
-    
-    processes = []
+    """
+    Launch a local cluster of Raft nodes.
+    Sets up the PYTHONPATH and starts each node as a separate subprocess.
+    """
+    print(f"[INFO] Starting {num_nodes} Raft Nodes...")
+    procs = []
+    root = os.path.join(os.path.dirname(__file__), '..')
+    env = os.environ.copy()
+    env['PYTHONPATH'] = os.path.join(root, 'src')
     
     for i in range(1, num_nodes + 1):
-        cmd = [sys.executable, 'src/main.py', '--id', str(i)]
-        print(f"Starting Node {i}...")
-        project_root = os.path.join(os.path.dirname(__file__), '..')
-        env = os.environ.copy()
-        env['PYTHONPATH'] = os.path.join(project_root, 'src')
-        proc = subprocess.Popen(
-            cmd,
-            cwd=project_root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
-        processes.append((i, proc))
+        # Allow stdout/stderr to inherit from parent for tracing as requested
+        p = subprocess.Popen([sys.executable, 'src/main.py', '--id', str(i)], 
+                             cwd=root, env=env)
+        procs.append((i, p))
         time.sleep(0.5)
     
-    print(f"\n✓ All {num_nodes} nodes started")
-    print("Press Ctrl+C to stop all nodes\n")
-    
+    print("[INFO] Raft Cluster running. Press Ctrl+C to stop.")
     try:
-        while True:
-            for node_id, proc in processes:
-                line = proc.stdout.readline()
-                if line:
-                    print(f"[Node {node_id}] {line.strip()}")
+        while True: time.sleep(1)
     except KeyboardInterrupt:
-        print("\n\n=== Stopping All Nodes ===")
-        for node_id, proc in processes:
-            proc.terminate()
-            print(f"Stopped Node {node_id}")
-        print("Done.")
+        print("\n[INFO] Stopping Raft cluster...")
+        for _, p in procs: p.terminate()
 
 if __name__ == '__main__':
     run_cluster()

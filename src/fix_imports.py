@@ -33,7 +33,7 @@ def fix_grpc_imports(file_path):
     if fixed_content != content:
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(fixed_content)
-        print(f"✓ Fixed imports in {file_path.name}")
+        print(f"Fixed imports in {file_path.name}")
         return True
     return False
 

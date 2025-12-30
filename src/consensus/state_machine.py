@@ -1,79 +1,50 @@
-"""
-State Machine - Key-Value Store
-Applies committed log entries from the Raft consensus
-"""
 import threading
-import logging
-
 
 class StateMachine:
     """
-    Simple key-value store that applies committed Raft log entries.
-    Thread-safe for concurrent access.
+    Simple in-memory key-value store that applies validated consensus commands.
     """
     
-    def __init__(self, logger=None):
+    def __init__(self, node=None):
         self.data = {}
         self.lock = threading.Lock()
-        self.logger = logger or logging.getLogger(__name__)
+        self.node = node
     
-    def apply(self, command):
+    def log(self, message):
+        if self.node:
+            self.node.log(message)
+        else:
+            print(f"[INFO][StateMachine] {message}")
+
+    def apply(self, cmd):
         """
-        Apply a command to the state machine.
-        
-        Supported commands:
-        - "SET key=value" - Set a key to a value
-        - "DELETE key" - Delete a key
-        
+        Apply a command (SET or DELETE) to the state machine.
         Returns: (success: bool, result: str)
         """
         with self.lock:
             try:
-                parts = command.strip().split(maxsplit=1)
-                if not parts:
-                    return False, "Empty command"
-                
-                op = parts[0].upper()
-                
-                if op == 'SET' and len(parts) == 2:
-                    if '=' not in parts[1]:
-                        return False, "SET requires key=value format"
-                    key, value = parts[1].split('=', 1)
-                    self.data[key.strip()] = value.strip()
-                    self.logger.info(f"Applied: SET {key}={value}")
-                    return True, f"OK: {key}={value}"
-                
-                elif op == 'DELETE' and len(parts) == 2:
-                    key = parts[1].strip()
-                    if key in self.data:
-                        del self.data[key]
-                        self.logger.info(f"Applied: DELETE {key}")
-                        return True, f"OK: deleted {key}"
-                    return False, f"Key '{key}' not found"
-                
-                elif op == 'GET' and len(parts) == 2:
-                    # GET is read-only, doesn't need to go through log
-                    key = parts[1].strip()
-                    if key in self.data:
-                        return True, self.data[key]
-                    return False, f"Key '{key}' not found"
-                
-                else:
-                    return False, f"Unknown command: {command}"
-                    
-            except Exception as e:
-                return False, f"Error: {str(e)}"
+                p = cmd.strip().split(maxsplit=1)
+                if not p: return False, "Empty"
+                op = p[0].upper()
+                if op == 'SET' and len(p) == 2 and '=' in p[1]:
+                    k, v = p[1].split('=', 1)
+                    self.data[k.strip()] = v.strip()
+                    self.log(f"State updated: {k.strip()}={v.strip()}")
+                    return True, "OK"
+                if op == 'DELETE' and len(p) == 2:
+                    k = p[1].strip()
+                    if k in self.data:
+                        del self.data[k]
+                        self.log(f"State deleted: {k}")
+                        return True, "OK"
+                    return False, "Not found"
+                return False, f"Unknown: {cmd}"
+            except Exception as e: return False, str(e)
     
-    def get(self, key):
-        """Get a value by key (read-only)"""
-        with self.lock:
-            return self.data.get(key)
-    
-    def get_all(self):
-        """Get all key-value pairs (snapshot)"""
-        with self.lock:
-            return dict(self.data)
-    
-    def __len__(self):
-        with self.lock:
-            return len(self.data)
+    def get(self, k):
+        """Read-only access to the state machine data."""
+        with self.lock: return self.data.get(k)
+
+    def snapshot(self):
+        """Return a copy of the current state machine data."""
+        with self.lock: return dict(self.data)
